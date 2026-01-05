@@ -1,0 +1,27 @@
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
+*.sqlite3
+
+# Entornos virtuales
+.env
+.venv
+venv/
+ENV/
+
+# Streamlit
+.streamlit/
+
+# Archivos temporales y logs
+*.log
+*.tmp
+*.bak
+cache/
+
+# Configuración del sistema
+.DS_Store
+Thumbs.db
