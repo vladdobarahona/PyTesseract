@@ -63,6 +63,18 @@ def ensure_tesseract() -> bool:
     st.caption(f"✅ Tesseract detectado en: {tpath}")
     return True
 
+##start  delete #################################################################
+import shutil, os, pytesseract, streamlit as st
+
+with st.expander("🧪 Diagnóstico Tesseract/Poppler"):
+    st.write("which(tesseract):", shutil.which("tesseract"))
+    try:
+        st.write("Idiomas detectados:", pytesseract.get_languages(config=""))
+    except Exception as e:
+        st.write("Error listando idiomas:", e)
+    st.write("TESSDATA_PREFIX:", os.environ.get("TESSDATA_PREFIX"))
+    st.write("which(pdftoppm):", shutil.which("pdftoppm"))
+## end delete #################################################################
 
 def ensure_poppler() -> bool:
     """Verifica que Poppler esté disponible (pdftoppm) para pdf2image."""
