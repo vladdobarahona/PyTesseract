@@ -6,14 +6,14 @@
 
 import io
 import os
-from typing import List, Tuple
+from typing import List
 
 import streamlit as st
-from PIL import Image, ImageOps, ImageFilter, ImageEnhance
+from PIL import Image, ImageOps, ImageFilter
+
 import pytesseract
 
-# PDF -> imágenes
-# Nota: pdf2image requiere Poppler instalado en el sistema.
+# PDF -> imágenes (requiere Poppler instalado)
 from pdf2image import convert_from_bytes
 
 # -----------------------------
@@ -37,23 +37,33 @@ tesseract_path = st.sidebar.text_input(
 if tesseract_path.strip():
     pytesseract.pytesseract.tesseract_cmd = tesseract_path.strip()
 
-# Idiomas
+# Idiomas (asegúrate de tenerlos instalados en tessdata)
+lang_options = ["spa", "eng", "por", "fra", "deu"]
 langs = st.sidebar.multiselect(
     "Idiomas (tesseract 'lang' instalados)",
-    options=["spa", "eng", "por", "fra", "deu"],
+    options=lang_options,
     default=["spa", "eng"],
-    help="Selecciona los idiomas que tengas instalados en Tesseract (tessdata)."
+    help="Selecciona los idiomas que tengas instalados en Tesseract."
 )
 lang_code = "+".join(langs) if langs else "spa"
 
 # OEM y PSM
-oem = st.sidebar.selectbox("OEM (motor OCR)", options=[0, 1, 2, 3], index=3,
-                           help="0: Original, 1: Neural LSTM, 2: Combinado, 3: Default según Tesseract.")
+oem = st.sidebar.selectbox(
+    "OEM (motor OCR)",
+    options=[0, 1, 2, 3],
+    index=3,
+    help="0: Original; 1: Neural LSTM; 2: Combinado; 3: Default."
+)
+
+psm_options = [3, 4, 6, 11, 12, 13]
+# Selecciona por valor, no por índice fijo, para evitar errores si la lista cambia
+default_psm_value = 6
+psm_default_index = psm_options.index(default_psm_value) if default_psm_value in psm_options else 0
 psm = st.sidebar.selectbox(
     "PSM (Page Segmentation Mode)",
-    options=[3, 4, 6, 11, 12, 13],
-    index=6,
-    help="3: Full page; 6: Asignación de bloques; 11: Sparse text; 13: Raw line; etc."
+    options=psm_options,
+    index=psm_default_index,
+    help="3: Full page; 6: Bloques; 11: Sparse text; 12: Sparse + OSD; 13: Raw line."
 )
 
 # Preprocesamiento
@@ -62,7 +72,7 @@ do_autocontrast = st.sidebar.checkbox("Aumentar contraste", value=True)
 do_sharpen = st.sidebar.checkbox("Nitidez", value=True)
 do_threshold = st.sidebar.checkbox("Binarización (Umbral)", value=True)
 do_denoise = st.sidebar.checkbox("Reducción de ruido (mediana)", value=True)
-do_deskew = st.sidebar.checkbox("Detectar y corregir rotación", value=True)
+do_deskew = st.sidebar.checkbox("Detectar y corregir rotación (OSD)", value=True)
 
 dpi = st.sidebar.slider("DPI (solo PDFs)", min_value=200, max_value=400, value=300, step=50)
 
@@ -71,56 +81,76 @@ dpi = st.sidebar.slider("DPI (solo PDFs)", min_value=200, max_value=400, value=3
 # -----------------------------
 def preprocess_image(img: Image.Image) -> Image.Image:
     """Aplica preprocesamiento básico para mejorar el OCR."""
-    if do_grayscale and img.mode != "L":
-        img = ImageOps.grayscale(img)
+    try:
+        # Escala de grises
+        if do_grayscale and img.mode != "L":
+            img = ImageOps.grayscale(img)
 
-    if do_autocontrast:
-        img = ImageOps.autocontrast(img)
+        # Contraste automático
+        if do_autocontrast:
+            img = ImageOps.autocontrast(img)
 
-    if do_sharpen:
-        img = img.filter(ImageFilter.UnsharpMask(radius=1.5, percent=150, threshold=3))
+        # Nitidez
+        if do_sharpen:
+            img = img.filter(ImageFilter.UnsharpMask(radius=1.5, percent=150, threshold=3))
 
-    if do_threshold:
-        # Umbral simple adaptado (para modo 'L' preferible)
-        if img.mode != "L":
-            tmp = ImageOps.grayscale(img)
-        else:
-            tmp = img
-        # Umbral por autocontrast y punto
-        # Usamos un umbral fijo conservador; ajusta según calidad
-        img = tmp.point(lambda p: 255 if p > 160 else 0)
+        # Binarización (umbral sencillo)
+        if do_threshold:
+            # Asegurar modo L para umbral
+            tmp = img if img.mode == "L" else ImageOps.grayscale(img)
+            # Umbral fijo (ajustable)
+            img = tmp.point(lambda p: 255 if p > 160 else 0)
 
-    if do_denoise:
-        img = img.filter(ImageFilter.MedianFilter(size=3))
+        # Reducción de ruido
+        if do_denoise:
+            img = img.filter(ImageFilter.MedianFilter(size=3))
 
-    return img
+        return img
+    except Exception as e:
+        st.warning(f"Preprocesamiento: {e}")
+        return img
 
 def try_deskew(img: Image.Image) -> Image.Image:
     """Usa OSD (Orientation & Script Detection) para estimar rotación y corregirla."""
+    if not do_deskew:
+        return img
     try:
         osd = pytesseract.image_to_osd(img)
-        # Ejemplo de salida: "Rotate: 90\nOrientation: ...\n"
         angle = 0
         for line in osd.splitlines():
             if line.lower().startswith("rotate"):
                 angle = int(line.split(":")[1].strip())
                 break
         if angle != 0:
-            img = img.rotate(360 - angle, expand=True, fillcolor=255)
-    except Exception:
-        pass
+            # Rotar en sentido contrario para corregir
+            fillcolor = 255 if img.mode in ("L", "1") else (255, 255, 255)
+            img = img.rotate(360 - angle, expand=True, fillcolor=fillcolor)
+    except Exception as e:
+        # OSD puede fallar si la imagen es muy pequeña o muy limpia (texto escaso)
+        st.info(f"No se pudo determinar rotación automáticamente (OSD): {e}")
     return img
 
 def ocr_image(img: Image.Image, lang: str, oem_: int, psm_: int) -> str:
     """Ejecuta OCR sobre una imagen con configuración personalizada."""
     config = f"--oem {oem_} --psm {psm_}"
-    text = pytesseract.image_to_string(img, lang=lang, config=config)
-    return text
+    try:
+        text = pytesseract.image_to_string(img, lang=lang, config=config)
+        return text
+    except pytesseract.TesseractError as te:
+        st.error(f"Error de Tesseract: {te}")
+        return ""
+    except Exception as e:
+        st.error(f"OCR: {e}")
+        return ""
 
 def pdf_to_images(pdf_bytes: bytes, dpi_: int) -> List[Image.Image]:
     """Convierte PDF (bytes) a imágenes PIL. Requiere Poppler instalado."""
-    pages = convert_from_bytes(pdf_bytes, dpi=dpi_, fmt="png")
-    return pages
+    try:
+        pages = convert_from_bytes(pdf_bytes, dpi=dpi_, fmt="png")
+        return pages
+    except Exception as e:
+        st.error(f"No se pudo convertir el PDF a imágenes. Verifica Poppler: {e}")
+        return []
 
 def make_txt_download(name: str, content: str):
     st.download_button(
@@ -160,6 +190,9 @@ else:
         st.error(f"Error al procesar el archivo: {e}")
         st.stop()
 
+    if not images:
+        st.stop()
+
     st.write(f"📄 Páginas/Imágenes detectadas: {len(images)}")
 
     all_text = []
@@ -172,8 +205,7 @@ else:
 
         # Preprocesamiento y deskew
         proc = preprocess_image(img)
-        if do_deskew:
-            proc = try_deskew(proc)
+        proc = try_deskew(proc)
 
         with col2:
             st.image(proc, caption=f"Preprocesada {idx}", use_column_width=True)
@@ -196,7 +228,9 @@ else:
 
     # (Opcional) Generar PDF con texto incrustado (searchable)
     # Nota: Requiere Tesseract 4+ y puede ser pesado en documentos largos.
-    if st.checkbox("Generar PDF 'searchable' (por página)"):
+    st.markdown("---")
+    st.markdown("### 📑 Generar PDF con texto incrustado por página (opcional)")
+    if st.checkbox("Crear PDF 'searchable' por página"):
         for i, img in enumerate(images, start=1):
             try:
                 pdf_bytes = pytesseract.image_to_pdf_or_hocr(img, extension='pdf')
@@ -204,7 +238,8 @@ else:
                     label=f"💾 Descargar página {i} OCR-PDF",
                     data=pdf_bytes,
                     file_name=f"{os.path.splitext(file_name)[0]}_ocr_p{i}.pdf",
-                    mime="application/pdf"
+                    mime="application/pdf",
+                    key=f"pdf_dl_{i}"
                 )
             except Exception as e:
                 st.warning(f"No se pudo generar PDF OCR para la página {i}: {e}")
